@@ -1,0 +1,17 @@
+services:
+
+  channel-delay-cloner:
+    # build: .
+    image: drumsergio/telegram-delay-channel-cloner:0.0.1 # You can build it yourself or use my image
+    environment:
+      BOT_TOKEN: ""
+      SOURCE_CHANNEL: ""
+      TARGET_CHANNEL: ""
+      DELAY: 60 # 1min
+      DB_LOCATION: /data/messages.db
+      POLLING: 30 # 30s
+    volumes:
+      - messages_db:/data
+
+  volumes:
+    messages_db:

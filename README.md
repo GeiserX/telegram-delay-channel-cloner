@@ -5,7 +5,7 @@ Telegram Bot which copies messages from a channel and pastes it into another aft
 ## Features
 - Deleted messages do not get copied
 - Batch processing to handle bursts of messages
-- Deletion of messages of old messages after a specified set of time
+- Deletion of old messages after a specified set of time
 - Send updated edited message if message hasn't been sent to the target channel
 - Configurable parameters via environment
 

@@ -126,8 +126,9 @@ docker build -t telegram-delay-channel-cloner .
 |---------|-------------|
 | [Telegram-Archive](https://github.com/GeiserX/Telegram-Archive) | Automated incremental Telegram backups with local web viewer |
 | [paperless-telegram-bot](https://github.com/GeiserX/paperless-telegram-bot) | Manage Paperless-NGX documents through Telegram |
-| [telegram-slskd-local-bot](https://github.com/GeiserX/telegram-slskd-local-bot) | Automated music discovery and download via Telegram |
+| [AskePub](https://github.com/GeiserX/AskePub) | Telegram bot for ePub annotation with GPT-4 |
 | [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) | Sync Jellyfin access with Telegram channel membership |
+| [telegram-slskd-local-bot](https://github.com/GeiserX/telegram-slskd-local-bot) | Automated music discovery and download via Telegram |
 
 
 ## Maintainers

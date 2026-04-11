@@ -1,0 +1,25 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt && pip install pytest pytest-cov pytest-asyncio
+      - run: pytest --cov --cov-report=xml -v
+        env:
+          BOT_TOKEN: "fake-token"
+          SOURCE_CHANNEL: "-1001111111111"
+          TARGET_CHANNEL: "-1002222222222"
+          DELAY: "60"
+      - uses: codecov/codecov-action@v5
+        if: github.event_name == 'push'
+        with:
+          fail_ci_if_error: false

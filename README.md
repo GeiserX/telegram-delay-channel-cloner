@@ -7,6 +7,7 @@
   <a href="https://hub.docker.com/r/drumsergio/telegram-delay-channel-cloner"><img src="https://img.shields.io/docker/pulls/drumsergio/telegram-delay-channel-cloner?style=flat-square&logo=docker&label=pulls" alt="Docker Pulls"></a>
   <a href="https://github.com/GeiserX/telegram-delay-channel-cloner/blob/main/LICENSE"><img src="https://img.shields.io/github/license/GeiserX/telegram-delay-channel-cloner?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/python-3.12-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.12">
+  <a href="https://codecov.io/gh/GeiserX/telegram-delay-channel-cloner"><img src="https://codecov.io/gh/GeiserX/telegram-delay-channel-cloner/graph/badge.svg" alt="codecov"></a>
 </p>
 
 ---

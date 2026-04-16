@@ -121,17 +121,6 @@ cd telegram-delay-channel-cloner
 docker build -t telegram-delay-channel-cloner .
 ```
 
-## More Telegram Tools
-
-| Project | Description |
-|---------|-------------|
-| [Telegram-Archive](https://github.com/GeiserX/Telegram-Archive) | Automated incremental Telegram backups with local web viewer |
-| [paperless-telegram-bot](https://github.com/GeiserX/paperless-telegram-bot) | Manage Paperless-NGX documents through Telegram |
-| [AskePub](https://github.com/GeiserX/AskePub) | Telegram bot for ePub annotation with GPT-4 |
-| [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) | Sync Jellyfin access with Telegram channel membership |
-| [telegram-slskd-local-bot](https://github.com/GeiserX/telegram-slskd-local-bot) | Automated music discovery and download via Telegram |
-
-
 ## Maintainers
 
 - [@GeiserX](https://github.com/GeiserX)
@@ -150,6 +139,8 @@ This project follows the [Contributor Covenant](http://contributor-covenant.org/
 | [Telegram-Archive](https://github.com/GeiserX/Telegram-Archive) | Automated, incremental Telegram backups with a local web viewer |
 | [telegram-slskd-local-bot](https://github.com/GeiserX/telegram-slskd-local-bot) | Automated music discovery and download via Telegram bot with Soulseek |
 | [paperless-telegram-bot](https://github.com/GeiserX/paperless-telegram-bot) | Manage Paperless-NGX documents entirely through Telegram |
+| [AskePub](https://github.com/GeiserX/AskePub) | Telegram bot for ePub annotation with GPT-4 |
+| [jellyfin-telegram-channel-sync](https://github.com/GeiserX/jellyfin-telegram-channel-sync) | Sync Jellyfin access with Telegram channel membership |
 | [telegram-archive-mcp](https://github.com/GeiserX/telegram-archive-mcp) | MCP Server for Telegram-Archive |
 | [n8n-nodes-telegram-archive](https://github.com/GeiserX/n8n-nodes-telegram-archive) | n8n community node for Telegram-Archive |
 

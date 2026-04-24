@@ -1,360 +1,318 @@
-"""Tests for telegram-delay-channel-cloner main module."""
-
 import os
-import sys
 import sqlite3
+import tempfile
 from datetime import datetime, timedelta
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import BadRequest
 
-# Add src directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+import src.main as main
 
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def mock_env(monkeypatch):
-    """Set required environment variables for module import."""
-    monkeypatch.setenv('BOT_TOKEN', 'fake-bot-token')
-    monkeypatch.setenv('SOURCE_CHANNEL', '-1001111111111')
-    monkeypatch.setenv('TARGET_CHANNEL', '-1002222222222')
-    monkeypatch.setenv('DELAY', '60')
-    monkeypatch.setenv('POLLING', '5')
-    monkeypatch.setenv('DB_LOCATION', '/tmp/test_messages.db')
-    monkeypatch.setenv('COPY_MESSAGE', 'True')
-    monkeypatch.setenv('RETENTION_PERIOD', '7')
-    monkeypatch.setenv('BATCH_SIZE', '10')
+def tmp_db(tmp_path):
+    """Use a temporary file-based SQLite DB so multiple connections share state."""
+    db_path = str(tmp_path / "test_messages.db")
+    with patch.object(main, "DB_LOCATION", db_path):
+        main.init_db()
+        yield db_path
 
 
-@pytest.fixture
-def temp_db(tmp_path, monkeypatch):
-    """Create a temporary SQLite database with messages table."""
-    db_path = str(tmp_path / "messages.db")
-    monkeypatch.setenv('DB_LOCATION', db_path)
-    # Re-import to pick up new env
-    if 'main' in sys.modules:
-        del sys.modules['main']
-    import main
-    main.DB_LOCATION = db_path
-    main.init_db()
-    return db_path
+def _insert_message(db_path, message_id, status="to_forward", forward_time=None, created_at=None):
+    """Helper to insert a test message directly into the DB."""
+    if forward_time is None:
+        forward_time = datetime.now() - timedelta(seconds=60)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    if created_at:
+        cursor.execute(
+            "INSERT INTO messages (message_id, status, forward_time, created_at) VALUES (?, ?, ?, ?)",
+            (message_id, status, forward_time, created_at),
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO messages (message_id, status, forward_time) VALUES (?, ?, ?)",
+            (message_id, status, forward_time),
+        )
+    conn.commit()
+    conn.close()
 
 
-# ---------------------------------------------------------------------------
-# init_db
-# ---------------------------------------------------------------------------
+def _get_message(db_path, message_id):
+    """Helper to read a message from the DB."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM messages WHERE message_id=?", (message_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def _count_messages(db_path):
+    """Helper to count all messages in the DB."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM messages")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+# --- init_db ---
 
 class TestInitDb:
-    def test_creates_messages_table(self, tmp_path, monkeypatch):
-        db_path = str(tmp_path / "init_test.db")
-        monkeypatch.setenv('DB_LOCATION', db_path)
-        if 'main' in sys.modules:
-            del sys.modules['main']
-        import main
-        main.DB_LOCATION = db_path
-        main.init_db()
-
-        conn = sqlite3.connect(db_path)
+    def test_creates_messages_table(self, tmp_db):
+        conn = sqlite3.connect(tmp_db)
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
         assert cursor.fetchone() is not None
         conn.close()
 
-    def test_creates_index(self, tmp_path, monkeypatch):
-        db_path = str(tmp_path / "index_test.db")
-        monkeypatch.setenv('DB_LOCATION', db_path)
-        if 'main' in sys.modules:
-            del sys.modules['main']
-        import main
-        main.DB_LOCATION = db_path
-        main.init_db()
-
-        conn = sqlite3.connect(db_path)
+    def test_creates_forward_time_index(self, tmp_db):
+        conn = sqlite3.connect(tmp_db)
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_forward_time'")
         assert cursor.fetchone() is not None
         conn.close()
 
-    def test_idempotent(self, tmp_path, monkeypatch):
-        db_path = str(tmp_path / "idempotent_test.db")
-        monkeypatch.setenv('DB_LOCATION', db_path)
-        if 'main' in sys.modules:
-            del sys.modules['main']
-        import main
-        main.DB_LOCATION = db_path
-        main.init_db()
-        main.init_db()  # Should not raise
-
-
-# ---------------------------------------------------------------------------
-# update_message_status
-# ---------------------------------------------------------------------------
-
-class TestUpdateMessageStatus:
-    def test_updates_status(self, temp_db):
-        import main
-        # Insert a test message
-        conn = sqlite3.connect(temp_db)
-        conn.execute("INSERT INTO messages (message_id, status, forward_time) VALUES (100, 'to_forward', ?)",
-                     (datetime.now().isoformat(),))
-        conn.commit()
-        conn.close()
-
-        main.update_message_status(100, 'forwarded', 200)
-
-        conn = sqlite3.connect(temp_db)
+    def test_is_idempotent(self, tmp_db):
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            main.init_db()
+            main.init_db()
+        conn = sqlite3.connect(tmp_db)
         cursor = conn.cursor()
-        cursor.execute("SELECT status, target_message_id FROM messages WHERE message_id = 100")
-        row = cursor.fetchone()
-        conn.close()
-        assert row[0] == 'forwarded'
-        assert row[1] == 200
-
-    def test_updates_without_target_id(self, temp_db):
-        import main
-        conn = sqlite3.connect(temp_db)
-        conn.execute("INSERT INTO messages (message_id, status, forward_time) VALUES (101, 'to_forward', ?)",
-                     (datetime.now().isoformat(),))
-        conn.commit()
-        conn.close()
-
-        main.update_message_status(101, 'failed')
-
-        conn = sqlite3.connect(temp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT status, target_message_id FROM messages WHERE message_id = 101")
-        row = cursor.fetchone()
-        conn.close()
-        assert row[0] == 'failed'
-        assert row[1] is None
-
-
-# ---------------------------------------------------------------------------
-# delete_message_from_db
-# ---------------------------------------------------------------------------
-
-class TestDeleteMessageFromDb:
-    def test_deletes_existing_message(self, temp_db):
-        import main
-        conn = sqlite3.connect(temp_db)
-        conn.execute("INSERT INTO messages (message_id, status, forward_time) VALUES (200, 'to_forward', ?)",
-                     (datetime.now().isoformat(),))
-        conn.commit()
-        conn.close()
-
-        main.delete_message_from_db(200)
-
-        conn = sqlite3.connect(temp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM messages WHERE message_id = 200")
-        assert cursor.fetchone() is None
-        conn.close()
-
-    def test_no_error_on_nonexistent_message(self, temp_db):
-        import main
-        # Should not raise
-        main.delete_message_from_db(999)
-
-
-# ---------------------------------------------------------------------------
-# channel_post_handler (async)
-# ---------------------------------------------------------------------------
-
-class TestChannelPostHandler:
-    @pytest.mark.asyncio
-    async def test_stores_message_in_db(self, temp_db):
-        import main
-
-        mock_update = MagicMock()
-        mock_update.channel_post.message_id = 300
-        mock_context = MagicMock()
-
-        await main.channel_post_handler(mock_update, mock_context)
-
-        conn = sqlite3.connect(temp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT message_id, status FROM messages WHERE message_id = 300")
-        row = cursor.fetchone()
-        conn.close()
-        assert row is not None
-        assert row[1] == 'to_forward'
-
-    @pytest.mark.asyncio
-    async def test_ignores_none_post(self, temp_db):
-        import main
-
-        mock_update = MagicMock()
-        mock_update.channel_post = None
-        mock_context = MagicMock()
-
-        await main.channel_post_handler(mock_update, mock_context)
-        # Should return without error
-
-    @pytest.mark.asyncio
-    async def test_forward_time_is_in_future(self, temp_db):
-        import main
-
-        mock_update = MagicMock()
-        mock_update.channel_post.message_id = 301
-        mock_context = MagicMock()
-
-        before = datetime.now()
-        await main.channel_post_handler(mock_update, mock_context)
-
-        conn = sqlite3.connect(temp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT forward_time FROM messages WHERE message_id = 301")
-        row = cursor.fetchone()
-        conn.close()
-        forward_time = datetime.fromisoformat(str(row[0]))
-        assert forward_time > before
-
-
-# ---------------------------------------------------------------------------
-# forward_or_copy_message (async)
-# ---------------------------------------------------------------------------
-
-class TestForwardOrCopyMessage:
-    @pytest.mark.asyncio
-    async def test_forwards_ready_messages(self, temp_db):
-        import main
-
-        # Insert a message ready to forward (forward_time in past) using string format
-        past_time = (datetime.now() - timedelta(seconds=120)).strftime('%Y-%m-%d %H:%M:%S')
-        conn = sqlite3.connect(temp_db)
-        conn.execute("INSERT INTO messages (message_id, status, forward_time) VALUES (400, 'to_forward', ?)",
-                     (past_time,))
-        conn.commit()
-        conn.close()
-
-        mock_context = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.message_id = 401
-        mock_context.bot.copy_message = AsyncMock(return_value=mock_sent)
-
-        main.COPY_MESSAGE = True
-        await main.forward_or_copy_message(mock_context)
-
-        mock_context.bot.copy_message.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_skips_future_messages(self, temp_db):
-        import main
-
-        # Insert a message not yet ready (forward_time in future)
-        future_time = (datetime.now() + timedelta(hours=1)).isoformat()
-        conn = sqlite3.connect(temp_db)
-        conn.execute("INSERT INTO messages (message_id, status, forward_time) VALUES (500, 'to_forward', ?)",
-                     (future_time,))
-        conn.commit()
-        conn.close()
-
-        mock_context = MagicMock()
-        mock_context.bot.copy_message = AsyncMock()
-
-        await main.forward_or_copy_message(mock_context)
-
-        mock_context.bot.copy_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_messages_does_nothing(self, temp_db):
-        import main
-        mock_context = MagicMock()
-        mock_context.bot.copy_message = AsyncMock()
-
-        await main.forward_or_copy_message(mock_context)
-        mock_context.bot.copy_message.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# delete_old_messages (async)
-# ---------------------------------------------------------------------------
-
-class TestDeleteOldMessages:
-    @pytest.mark.asyncio
-    async def test_deletes_old_records(self, temp_db):
-        import main
-
-        # Insert an old message
-        old_time = (datetime.now() - timedelta(days=30)).isoformat()
-        conn = sqlite3.connect(temp_db)
-        conn.execute(
-            "INSERT INTO messages (message_id, status, forward_time, created_at) VALUES (600, 'forwarded', ?, ?)",
-            (old_time, old_time))
-        conn.commit()
-        conn.close()
-
-        mock_context = MagicMock()
-        main.RETENTION_PERIOD = 7
-        await main.delete_old_messages(mock_context)
-
-        conn = sqlite3.connect(temp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM messages WHERE message_id = 600")
-        assert cursor.fetchone() is None
-        conn.close()
-
-    @pytest.mark.asyncio
-    async def test_keeps_recent_records(self, temp_db):
-        import main
-
-        # Insert a recent message
-        recent_time = datetime.now().isoformat()
-        conn = sqlite3.connect(temp_db)
-        conn.execute(
-            "INSERT INTO messages (message_id, status, forward_time, created_at) VALUES (700, 'forwarded', ?, ?)",
-            (recent_time, recent_time))
-        conn.commit()
-        conn.close()
-
-        mock_context = MagicMock()
-        main.RETENTION_PERIOD = 7
-        await main.delete_old_messages(mock_context)
-
-        conn = sqlite3.connect(temp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM messages WHERE message_id = 700")
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
         assert cursor.fetchone() is not None
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# start command (async)
-# ---------------------------------------------------------------------------
+# --- update_message_status ---
 
-class TestStartCommand:
+class TestUpdateMessageStatus:
+    def test_updates_status_and_target_message_id(self, tmp_db):
+        _insert_message(tmp_db, 100)
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            main.update_message_status(100, "forwarded", target_message_id=200)
+        row = _get_message(tmp_db, 100)
+        assert row[1] == "forwarded"
+        assert row[4] == 200
+
+    def test_updates_status_without_target_message_id(self, tmp_db):
+        _insert_message(tmp_db, 101)
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            main.update_message_status(101, "forwarded")
+        row = _get_message(tmp_db, 101)
+        assert row[1] == "forwarded"
+        assert row[4] is None
+
+
+# --- delete_message_from_db ---
+
+class TestDeleteMessageFromDb:
+    def test_deletes_existing_message(self, tmp_db):
+        _insert_message(tmp_db, 300)
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            main.delete_message_from_db(300)
+        assert _get_message(tmp_db, 300) is None
+
+    def test_logs_when_message_deleted(self, tmp_db):
+        _insert_message(tmp_db, 301)
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main.logger, "info") as mock_log:
+            main.delete_message_from_db(301)
+        mock_log.assert_called_once_with("Removed message 301 from database.")
+
+    def test_does_not_log_when_message_not_found(self, tmp_db):
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main.logger, "info") as mock_log:
+            main.delete_message_from_db(999)
+        mock_log.assert_not_called()
+
+
+# --- delete_old_messages ---
+
+class TestDeleteOldMessages:
     @pytest.mark.asyncio
-    async def test_start_replies(self):
-        import main
-        mock_update = MagicMock()
-        mock_update.message.reply_text = AsyncMock()
-        mock_context = MagicMock()
+    async def test_deletes_messages_older_than_retention_period(self, tmp_db):
+        old_time = datetime.now() - timedelta(days=30)
+        _insert_message(tmp_db, 400, created_at=old_time)
+        _insert_message(tmp_db, 401)  # Recent, should remain
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            await main.delete_old_messages(MagicMock())
+        assert _get_message(tmp_db, 400) is None
+        assert _get_message(tmp_db, 401) is not None
 
-        await main.start(mock_update, mock_context)
-        mock_update.message.reply_text.assert_called_once_with("Bot started successfully!")
+    @pytest.mark.asyncio
+    async def test_keeps_recent_messages(self, tmp_db):
+        _insert_message(tmp_db, 402)
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            await main.delete_old_messages(MagicMock())
+        assert _get_message(tmp_db, 402) is not None
 
 
-# ---------------------------------------------------------------------------
-# Configuration values
-# ---------------------------------------------------------------------------
+# --- channel_post_handler ---
 
-class TestConfiguration:
-    def test_delay_is_integer(self):
-        import main
-        assert isinstance(main.DELAY, int)
+class TestChannelPostHandler:
+    @pytest.mark.asyncio
+    async def test_returns_early_when_post_is_none(self, tmp_db):
+        update = MagicMock()
+        update.channel_post = None
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            await main.channel_post_handler(update, MagicMock())
+        assert _count_messages(tmp_db) == 0
 
-    def test_polling_is_integer(self):
-        import main
-        assert isinstance(main.POLLING, int)
+    @pytest.mark.asyncio
+    async def test_inserts_message_into_db(self, tmp_db):
+        update = MagicMock()
+        update.channel_post.message_id = 500
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            await main.channel_post_handler(update, MagicMock())
+        row = _get_message(tmp_db, 500)
+        assert row is not None
+        assert row[1] == "to_forward"
 
-    def test_retention_period_is_integer(self):
-        import main
-        assert isinstance(main.RETENTION_PERIOD, int)
+    @pytest.mark.asyncio
+    async def test_sets_forward_time_in_future(self, tmp_db):
+        update = MagicMock()
+        update.channel_post.message_id = 501
+        before = datetime.now()
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            await main.channel_post_handler(update, MagicMock())
+        row = _get_message(tmp_db, 501)
+        forward_time = datetime.fromisoformat(row[2])
+        assert forward_time > before
 
-    def test_batch_size_is_integer(self):
-        import main
-        assert isinstance(main.BATCH_SIZE, int)
+
+# --- start ---
+
+class TestStart:
+    @pytest.mark.asyncio
+    async def test_replies_with_success_message(self):
+        update = MagicMock()
+        update.message.reply_text = AsyncMock()
+        await main.start(update, MagicMock())
+        update.message.reply_text.assert_called_once_with("Bot started successfully!")
+
+
+# --- forward_or_copy_message ---
+
+class TestForwardOrCopyMessage:
+    @pytest.mark.asyncio
+    async def test_returns_early_when_no_messages_to_forward(self, tmp_db):
+        context = MagicMock()
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            await main.forward_or_copy_message(context)
+        context.bot.copy_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_processes_pending_messages(self, tmp_db):
+        past_time = datetime.now() - timedelta(seconds=60)
+        _insert_message(tmp_db, 600, forward_time=past_time)
+        context = MagicMock()
+        context.bot.copy_message = AsyncMock(return_value=MagicMock(message_id=700))
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main, "COPY_MESSAGE", True):
+            await main.forward_or_copy_message(context)
+        context.bot.copy_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_does_not_process_future_messages(self, tmp_db):
+        future_time = datetime.now() + timedelta(hours=1)
+        _insert_message(tmp_db, 601, forward_time=future_time)
+        context = MagicMock()
+        with patch.object(main, "DB_LOCATION", tmp_db):
+            await main.forward_or_copy_message(context)
+        context.bot.copy_message.assert_not_called()
+
+
+# --- forward_or_copy_message_chunk ---
+
+class TestForwardOrCopyMessageChunk:
+    @pytest.mark.asyncio
+    async def test_copies_message_when_copy_mode_enabled(self, tmp_db):
+        _insert_message(tmp_db, 700)
+        context = MagicMock()
+        context.bot.copy_message = AsyncMock(return_value=MagicMock(message_id=800))
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main, "COPY_MESSAGE", True), \
+             patch.object(main, "SOURCE_CHANNEL", "-100111"), \
+             patch.object(main, "TARGET_CHANNEL", "-100222"):
+            await main.forward_or_copy_message_chunk(context, [(700,)])
+        context.bot.copy_message.assert_called_once_with(
+            chat_id="-100222", from_chat_id="-100111", message_id=700
+        )
+
+    @pytest.mark.asyncio
+    async def test_forwards_message_when_copy_mode_disabled(self, tmp_db):
+        _insert_message(tmp_db, 701)
+        context = MagicMock()
+        context.bot.forward_message = AsyncMock(return_value=MagicMock(message_id=801))
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main, "COPY_MESSAGE", False), \
+             patch.object(main, "SOURCE_CHANNEL", "-100111"), \
+             patch.object(main, "TARGET_CHANNEL", "-100222"):
+            await main.forward_or_copy_message_chunk(context, [(701,)])
+        context.bot.forward_message.assert_called_once_with(
+            chat_id="-100222", from_chat_id="-100111", message_id=701
+        )
+
+    @pytest.mark.asyncio
+    async def test_deletes_message_on_bad_request_invalid_id(self, tmp_db):
+        _insert_message(tmp_db, 702)
+        context = MagicMock()
+        context.bot.copy_message = AsyncMock(side_effect=BadRequest("message_id_invalid"))
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main, "COPY_MESSAGE", True), \
+             patch.object(main.logger, "error") as mock_log:
+            await main.forward_or_copy_message_chunk(context, [(702,)])
+        mock_log.assert_called_once()
+        assert "message_id_invalid" in mock_log.call_args[0][0]
+        assert _get_message(tmp_db, 702) is None
+
+    @pytest.mark.asyncio
+    async def test_logs_error_on_other_bad_request(self, tmp_db):
+        _insert_message(tmp_db, 703)
+        context = MagicMock()
+        context.bot.copy_message = AsyncMock(side_effect=BadRequest("chat not found"))
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main, "COPY_MESSAGE", True), \
+             patch.object(main.logger, "error") as mock_log:
+            await main.forward_or_copy_message_chunk(context, [(703,)])
+        mock_log.assert_called_once()
+        assert "chat not found" in mock_log.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_logs_error_on_unexpected_exception(self, tmp_db):
+        _insert_message(tmp_db, 704)
+        context = MagicMock()
+        context.bot.copy_message = AsyncMock(side_effect=RuntimeError("network down"))
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main, "COPY_MESSAGE", True), \
+             patch.object(main.logger, "error") as mock_log:
+            await main.forward_or_copy_message_chunk(context, [(704,)])
+        mock_log.assert_called_once()
+        assert "network down" in mock_log.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_finally_block_deletes_message_after_success(self, tmp_db):
+        _insert_message(tmp_db, 705)
+        context = MagicMock()
+        context.bot.copy_message = AsyncMock(return_value=MagicMock(message_id=805))
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main, "COPY_MESSAGE", True):
+            await main.forward_or_copy_message_chunk(context, [(705,)])
+        assert _get_message(tmp_db, 705) is None
+
+    @pytest.mark.asyncio
+    async def test_processes_multiple_messages_in_chunk(self, tmp_db):
+        _insert_message(tmp_db, 706)
+        _insert_message(tmp_db, 707)
+        context = MagicMock()
+        context.bot.copy_message = AsyncMock(return_value=MagicMock(message_id=900))
+        with patch.object(main, "DB_LOCATION", tmp_db), \
+             patch.object(main, "COPY_MESSAGE", True):
+            await main.forward_or_copy_message_chunk(context, [(706,), (707,)])
+        assert context.bot.copy_message.call_count == 2
+        assert _get_message(tmp_db, 706) is None
+        assert _get_message(tmp_db, 707) is None

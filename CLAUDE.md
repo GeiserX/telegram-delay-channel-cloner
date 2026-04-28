@@ -1,4 +1,4 @@
-# AGENTS.md — Telegram Delay Channel Cloner
+# CLAUDE.md — Telegram Delay Channel Cloner
 
 ## Project Overview
 
